@@ -90,7 +90,7 @@ while not game_quit:
 
     # Draw frequency scale
     for i in range(0, DISPLAY_WIDTH + 1, 256):
-        freq_label = font.render(f'{94.7 + (i / DISPLAY_WIDTH) * 0.1:.2f} MHz', True, (255, 255, 255))
+        freq_label = font.render(f'{914.4 + (i / DISPLAY_WIDTH) * 0.1:.2f} MHz', True, (255, 255, 255))
         gameDisplay.blit(freq_label, (i + 50, DISPLAY_HEIGHT))
 
     # Draw time scale
