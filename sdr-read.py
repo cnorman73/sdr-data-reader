@@ -1,112 +1,87 @@
-from matplotlib import mlab as mlab
 from rtlsdr import RtlSdr
+import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image
-import pygame
-import time
+import matplotlib.mlab as mlab
+from matplotlib.animation import FuncAnimation
 
-# Increase display size by 4x
-DISPLAY_WIDTH = 256 * 4
-DISPLAY_HEIGHT = 200 * 4
-
+# Initialize the SDR
 sdr = RtlSdr()
-# Configure device
 sdr.sample_rate = 2.4e6  # Hz
-sdr.center_freq = 915e6  # Hz
-sdr.freq_correction = 60   # PPM
-sdr.gain = 'auto'
+sdr.freq_correction = 60  # PPM
+sdr.gain = 50  # Set gain to a higher value to capture signals
 
-# Calculate bandwidth
-bandwidth = sdr.sample_rate / 2
+# Define frequency segments
+start_freq = 900e6  # Hz
+end_freq = 930e6  # Hz
+segment_bw = sdr.sample_rate  # Effective bandwidth of each segment
+step_size = segment_bw / 2  # Overlap segments by half the bandwidth for smooth stitching
 
-# Calculate frequency range
-lower_freq = sdr.center_freq - bandwidth / 2
-upper_freq = sdr.center_freq + bandwidth / 2
+# Define the frequency range for the plot
+freq_range = np.arange(start_freq, end_freq, step_size)
 
-print(f"Bandwidth: {bandwidth / 1e6} MHz")
-print(f"Frequency range: {lower_freq / 1e6} MHz to {upper_freq / 1e6} MHz")
+# Waterfall chart parameters
+num_segments = len(freq_range)
+time_window = 100  # Number of time slices to display in the waterfall chart
 
-image = []
+# Initialize storage for waterfall data
+waterfall_data = np.zeros((time_window, num_segments * int(segment_bw / (sdr.sample_rate / 1024))))
 
-def get_data():
-    samples = sdr.read_samples(16*1024)
-    power, _ = mlab.psd(samples, NFFT=16384, Fs=sdr.sample_rate / 1e6)
+# Function to capture data for a given center frequency
+def capture_data(center_freq):
+    sdr.center_freq = center_freq
+    samples = sdr.read_samples(16 * 1024)
+    psd, freqs = mlab.psd(samples, NFFT=16 * 1024, Fs=sdr.sample_rate)
+    freqs += center_freq - sdr.sample_rate / 2  # Adjust frequencies
+    return psd
 
-    max_pow = 0
-    min_pow = 10
+# Initialize the plot
+fig, ax = plt.subplots(figsize=(12, 6))
+waterfall_img = ax.imshow(waterfall_data, aspect='auto', extent=[start_freq / 1e6, end_freq / 1e6, 0, time_window], cmap='viridis')
+plt.colorbar(waterfall_img, ax=ax, label='Power (dB)')
+ax.set_xlabel('Frequency (MHz)')
+ax.set_ylabel('Time (s)')
+ax.set_title('Waterfall Chart from 900 MHz to 930 MHz')
 
-    # Search the whole data set for maximum and minimum value
-    for dat in power:
-        if dat > max_pow:
-            max_pow = dat
-        elif dat < min_pow:
-            min_pow = dat
+def update_waterfall(frame):
+    global waterfall_data
+    # Collect data for each frequency segment
+    current_data = []
+    for freq in freq_range:
+        psd = capture_data(freq)
+        current_data.append(10 * np.log10(psd))
 
-    # Update image data
-    imagelist = []
-    for dat in power:
-        imagelist.append(mymap(dat, min_pow, max_pow, 0, 255))
-    
-    # Ensure image is DISPLAY_HEIGHT in length
-    imagelist = imagelist[round(len(imagelist) / 2) - round(len(imagelist) / 8): round(len(imagelist) / 2) + round(len(imagelist) / 8)]
-    
-    if len(image) < DISPLAY_HEIGHT:
-        image.append(imagelist)
-    else:
-        image.pop(0)  # Remove the top row
-        image.append(imagelist)  # Add the new row at the bottom
+    # Concatenate the current data from all segments
+    current_data = np.concatenate(current_data)
 
-def mymap(x, in_min, in_max, out_min, out_max):
-    return int((x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
+    # Debugging: Print min and max values of current_data
+    print(f"Min value of PSD: {np.min(current_data)} dB")
+    print(f"Max value of PSD: {np.max(current_data)} dB")
 
-pygame.init()
-gameDisplay = pygame.display.set_mode((DISPLAY_WIDTH + 100, DISPLAY_HEIGHT + 50))  # Adjust display size for scales
-pygame.display.set_caption("DIY SDR")
-clock = pygame.time.Clock()
-background = pygame.Surface(gameDisplay.get_size())
-background = background.convert()
-background.fill((0, 0, 0))
+    # Normalize the PSD values to a fixed range for visualization
+    min_val, max_val = np.min(current_data), np.max(current_data)
+    current_data = np.clip(current_data, min_val, max_val)
 
-font = pygame.font.SysFont('Arial', 15)
-game_quit = False
+    # Ensure current_data matches the number of columns in waterfall_data
+    current_data = current_data[:waterfall_data.shape[1]]
 
-while not game_quit:
+    # Update the waterfall data
+    waterfall_data = np.roll(waterfall_data, -1, axis=0)
+    waterfall_data[-1, :] = current_data
 
-    gameDisplay.blit(background, (0, 0))
+    # Update the plot
+    waterfall_img.set_data(waterfall_data)
+    waterfall_img.set_clim(vmin=min_val, vmax=max_val)  # Set color limits
+    return [waterfall_img]
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            game_quit = True
+# Create the animation
+ani = FuncAnimation(fig, update_waterfall, interval=1000, cache_frame_data=False)
 
-    get_data()
-    outimage = np.array(image, np.ubyte)
-    outimage = Image.fromarray(outimage, mode='L')
-    outimage = outimage.resize((DISPLAY_WIDTH, DISPLAY_HEIGHT), Image.NEAREST)  # Resize the image
-    outimage = outimage.convert('RGBA')
-    strFormat = 'RGBA'
-    raw_str = outimage.tobytes("raw", strFormat)
-    surface = pygame.image.fromstring(raw_str, outimage.size, 'RGBA')
-    gameDisplay.blit(surface, (50, 0))  # Adjust position for scales
+# Show the plot
+plt.show()
 
-    # Draw frequency scale
-    for i in range(0, DISPLAY_WIDTH + 1, 256):
-        freq_label = font.render(f'{914.4 + (i / DISPLAY_WIDTH) * 0.1:.2f} MHz', True, (255, 255, 255))
-        gameDisplay.blit(freq_label, (i + 50, DISPLAY_HEIGHT))
+# Close the SDR connection
+sdr.close()
 
-    # Draw time scale
-    for i in range(0, DISPLAY_HEIGHT + 1, 50):
-        time_label = font.render(f'{DISPLAY_HEIGHT // 4 - i // 50} s', True, (255, 255, 255))
-        gameDisplay.blit(time_label, (0, i))
 
-    pygame.display.update()
-    clock.tick(60)
 
-pygame.quit()
-
-try:
-    pass
-except KeyboardInterrupt:
-    pass
-finally:
-    sdr.close()
 
